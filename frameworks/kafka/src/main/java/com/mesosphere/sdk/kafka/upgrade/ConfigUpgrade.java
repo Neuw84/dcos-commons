@@ -5,6 +5,8 @@ import com.google.protobuf.TextFormat;
 import com.mesosphere.sdk.config.ConfigStore;
 import com.mesosphere.sdk.config.ConfigStoreException;
 import com.mesosphere.sdk.curator.CuratorConfigStore;
+import com.mesosphere.sdk.curator.CuratorStateStore;
+import com.mesosphere.sdk.dcos.DcosConstants;
 import com.mesosphere.sdk.kafka.upgrade.old.KafkaSchedulerConfiguration;
 import com.mesosphere.sdk.offer.CommonTaskUtils;
 import com.mesosphere.sdk.offer.TaskException;
@@ -32,8 +34,8 @@ public class ConfigUpgrade {
     private UUID newTargetId;
     private ConfigStore<ServiceSpec> configStore;
 
-    public ConfigUpgrade(ServiceSpec serviceSpec, StateStore stateStore) throws Exception {
-        this.stateStore = stateStore;
+    public ConfigUpgrade(ServiceSpec serviceSpec) throws Exception {
+        this.stateStore = new CuratorStateStore(serviceSpec.getName(), DcosConstants.MESOS_MASTER_ZK_CONNECTION_STRING);
         startUpgrade(serviceSpec);
     }
 
@@ -152,7 +154,7 @@ public class ConfigUpgrade {
             LOGGER.info("disk size: " + kafkaSchedulerConfiguration.getBrokerConfiguration().getDisk());
 
         } catch (Exception e) {
-            LOGGER.error("Error while retrieving old Configuration to upgrade", e);
+            LOGGER.error("Error while retrieving old Configuration to upgrade", e.getMessage());
             return Optional.empty();
         }
         return Optional.of(kafkaSchedulerConfiguration);
