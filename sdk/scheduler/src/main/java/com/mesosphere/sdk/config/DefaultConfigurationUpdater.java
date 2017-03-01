@@ -142,8 +142,8 @@ public class DefaultConfigurationUpdater implements ConfigurationUpdater<Service
     private void cleanupDuplicateAndUnusedConfigs(ServiceSpec targetConfig, UUID targetConfigId)
             throws ConfigStoreException {
         List<Protos.TaskInfo> taskInfosToUpdate = new ArrayList<>();
-        Set<UUID> neededConfigs = new HashSet<>();
-        neededConfigs.add(targetConfigId);
+        Set<UUID> unnecessaryConfigs = new HashSet<>();
+
         // Search task labels for configs which need to be cleaned up.
         for (Protos.TaskInfo taskInfo : stateStore.fetchTasks()) {
             final UUID taskConfigId;
@@ -159,19 +159,26 @@ public class DefaultConfigurationUpdater implements ConfigurationUpdater<Service
                 LOGGER.info("Task {} configuration ID matches target: {}",
                         taskInfo.getName(), taskConfigId);
             } else {
-                final ServiceSpec taskConfig = configStore.fetch(taskConfigId);
-                if (!needsConfigUpdate(taskInfo, targetConfig, taskConfig)) {
-                    // Task is effectively already on the target config. Update task's config ID to match target,
-                    // and allow the duplicate config to be dropped from configStore.
-                    LOGGER.info("Task {} config {} is identical to target {}. Updating task configuration to {}.",
-                            taskInfo.getName(), taskConfigId, targetConfigId, targetConfigId);
-                    taskInfosToUpdate.add(
-                            CommonTaskUtils.setTargetConfiguration(taskInfo.toBuilder(), targetConfigId).build());
-                } else {
-                    // Config isn't the same as the target. Refrain from updating task, mark config as 'needed'.
-                    LOGGER.info("Task {} config {} differs from target {}. Leaving task as-is.",
-                            taskInfo.getName(), taskConfigId, targetConfigId);
-                    neededConfigs.add(taskConfigId);
+                try {
+                    final ServiceSpec taskConfig = configStore.fetch(taskConfigId);
+                    if (!needsConfigUpdate(taskInfo, targetConfig, taskConfig)) {
+                        // Task is effectively already on the target config. Update task's config ID to match target,
+                        // and allow the duplicate config to be dropped from configStore.
+                        LOGGER.info("Task {} config {} is identical to target {}. Updating task configuration to {}.",
+                                taskInfo.getName(), taskConfigId, targetConfigId, targetConfigId);
+                        taskInfosToUpdate.add(
+                                CommonTaskUtils.setTargetConfiguration(taskInfo.toBuilder(), targetConfigId).build());
+                        unnecessaryConfigs.add(taskConfigId);
+                    } else {
+                        // Config isn't the same as the target. Refrain from updating task, mark config as 'needed'.
+                        LOGGER.info("Task {} config {} differs from target {}. Leaving task as-is.",
+                                taskInfo.getName(), taskConfigId, targetConfigId);
+                    }
+                } catch (Exception e) {
+                    LOGGER.error("Can not fetch configuration taskConfigId {} for task {}",
+                            taskConfigId, taskInfo.getName());
+                    LOGGER.info("TaskInfo has incompatible configuration, skipping task {} : {}",
+                            taskInfo.getName(), e.getMessage());
                 }
             }
         }
@@ -182,7 +189,7 @@ public class DefaultConfigurationUpdater implements ConfigurationUpdater<Service
             stateStore.storeTasks(taskInfosToUpdate);
         }
 
-        clearConfigsNotListed(neededConfigs);
+        clearConfigsNotNeeded(unnecessaryConfigs);
     }
 
     private static void printConfigDiff(ServiceSpec oldConfig, UUID oldConfigId, String newConfigJson) {
@@ -199,7 +206,7 @@ public class DefaultConfigurationUpdater implements ConfigurationUpdater<Service
         } catch (Exception e) {
             LOGGER.error(String.format(
                     "Unable to get JSON representation of old target config object %s, " +
-                    "skipping diff vs new target: %s",
+                            "skipping diff vs new target: %s",
                     oldConfigId, oldConfig), e);
             // Don't add a validation error: That'd prevent the new config from replacing this one,
             // and we'd be stuck with this config forever! Hopefully the new config will fix things...
@@ -211,11 +218,6 @@ public class DefaultConfigurationUpdater implements ConfigurationUpdater<Service
             ServiceSpec targetConfig,
             ServiceSpec taskConfig) {
         LOGGER.info("Checking whether config update is needed for task: {}", taskInfo.getName());
-
-        if (targetConfig.equals(taskConfig)) {
-            LOGGER.info("Configurations are equal, no update needed for task: {}", taskInfo.getName());
-            return false;
-        }
 
         Optional<PodSpec> targetSpecOptional = getPodSpec(taskInfo, targetConfig);
         Optional<PodSpec> taskSpecOptional = getPodSpec(taskInfo, taskConfig);
@@ -264,13 +266,7 @@ public class DefaultConfigurationUpdater implements ConfigurationUpdater<Service
      *
      * @throws ConfigStoreException if config access fails
      */
-    private void clearConfigsNotListed(Set<UUID> neededConfigs) throws ConfigStoreException {
-        final Set<UUID> configsToClear = new HashSet<>();
-        for (UUID configId : configStore.list()) {
-            if (!neededConfigs.contains(configId)) {
-                configsToClear.add(configId);
-            }
-        }
+    private void clearConfigsNotNeeded(Set<UUID> configsToClear) throws ConfigStoreException {
         LOGGER.info("Cleaning up {} unused configs: {}", configsToClear.size(), configsToClear);
         for (UUID configToClear : configsToClear) {
             configStore.clear(configToClear);
